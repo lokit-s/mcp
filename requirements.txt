@@ -1,6 +1,13 @@
 fastmcp
 mysql-connector-python
 psycopg2-binary
-python-dotenv
+
 uvicorn
 pyodbc
+streamlit
+pandas
+pillow
+openai
+fastmcp
+python-dotenv
+asyncio
