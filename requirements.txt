@@ -1,5 +1,5 @@
-pyodbc
-psycopg2-binary
 fastmcp
 mysql-connector-python
+psycopg2-binary
 python-dotenv
+uvicorn
