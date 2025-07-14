@@ -445,55 +445,117 @@ def _clean_json(raw: str) -> str:
 
 
 def parse_user_query(query: str, available_tools: dict) -> dict:
-    """Parse user query with dynamic tool information"""
-    # Generate dynamic examples based on available tools
-    tool_examples = []
+    """Parse user query with fully dynamic tool selection based on tool descriptions"""
+
+    if not available_tools:
+        return {"error": "No tools available"}
+
+    # Build comprehensive tool information for the LLM
+    tool_info = []
     for tool_name, tool_desc in available_tools.items():
-        if "sql" in tool_name.lower() or "crud" in tool_name.lower():
-            tool_examples.append(f'"{tool_name}": {tool_desc}')
+        tool_info.append(f"- **{tool_name}**: {tool_desc}")
+
+    tools_description = "\n".join(tool_info)
 
     system = (
-        "You are a router to database CRUD tools. "
-        "Reply with exactly one JSON object in the form: "
-        '{"tool": string, "action": string, "args": object}.\n'
-        "If the user wants to view, show, list, display, or get table records, always use action: 'read'.\n"
-        "If the user wants to see the columns, structure, or schema of a table, or says 'describe' or 'show columns', use action: 'describe' and set args ['table_name'].\n"
-        "If the user says 'list customers', 'show customer table', 'display products', or 'view the product table', "
-        "map these to action: 'read' for the relevant tool.\n"
-        "For updates, always extract the field(s) being updated. "
-        'For example, if asked to update the email, include the argument \"new_email\" with the new value in args.\n\n'
-        f"Available tools: {', '.join(available_tools.keys())}\n"
-        "Examples:\n"
-        "User query: \"list customer table\"\n"
-        "User query: \"show me the records from product table\"\n"
-        "User query: \"display all products\"\n"
-        "User query: \"update price of gadget to 30\"\n"
-        "User query: \"delete widget\"\n"
+        "You are an intelligent sales agent and database router for CRUD operations. "
+        "Your job is to analyze the user's query and select the most appropriate tool based on the tool descriptions provided.\n\n"
+
+        "AS A SALES AGENT, YOU SHOULD:\n"
+        "- Understand business context and customer needs\n"
+        "- Recognize sales-related queries (orders, transactions, revenue, customer purchases)\n"
+        "- Identify cross-database relationships (customer orders, product sales, inventory)\n"
+        "- Provide intelligent routing for business analytics and reporting needs\n"
+        "- Handle complex queries that may involve multiple data sources\n\n"
+
+        "RESPONSE FORMAT:\n"
+        "Reply with exactly one JSON object: {\"tool\": string, \"action\": string, \"args\": object}\n\n"
+
+        "ACTION MAPPING:\n"
+        "- 'read': for viewing, listing, showing, displaying, or getting records\n"
+        "- 'create': for adding, inserting, or creating new records (orders, customers, products)\n"
+        "- 'update': for modifying, changing, or updating existing records\n"
+        "- 'delete': for removing, deleting, or destroying records\n"
+        "- 'describe': for showing table structure, schema, or column information\n\n"
+
+        "TOOL SELECTION GUIDELINES:\n"
+        "- Analyze the user's business intent and match it with the most relevant tool description\n"
+        "- Consider what type of data the user is asking about:\n"
+        "  * Customer data: names, emails, contact information, customer management\n"
+        "  * Product data: inventory, catalog, pricing, product details\n"
+        "  * Sales data: transactions, orders, revenue, purchase history, analytics\n"
+        "- Choose the tool whose description best matches the user's request\n"
+        "- For sales queries, prioritize tools that handle transaction and sales data\n"
+        "- If multiple tools could work, choose the most specific one for the business context\n\n"
+
+        "SALES-SPECIFIC ROUTING:\n"
+        "- 'show sales', 'list transactions', 'revenue report' → Use sales/transaction tools\n"
+        "- 'customer purchases', 'order history' → Use sales tools with customer context\n"
+        "- 'product sales', 'top selling items' → Use sales tools with product context\n"
+        "- 'create order', 'new sale' → Use sales creation tools\n"
+        "- 'customer list', 'add customer' → Use customer management tools\n"
+        "- 'product catalog', 'inventory' → Use product management tools\n\n"
+
+        "ARGUMENT EXTRACTION:\n"
+        "- Extract relevant business parameters from the user query\n"
+        "- For updates: include fields like 'new_email', 'new_price', 'new_quantity', etc.\n"
+        "- For describe: include 'table_name' if mentioned\n"
+        "- For specific records: include identifiers like 'name', 'id', 'customer_id', 'product_id'\n"
+        "- For sales: include 'customer_id', 'product_id', 'quantity', 'unit_price', 'total_amount'\n"
+        "- For date ranges: include 'start_date', 'end_date' if mentioned\n\n"
+
+        f"AVAILABLE TOOLS:\n{tools_description}\n\n"
+
+        "BUSINESS EXAMPLES:\n"
+        "Query: 'list all customers' → Analyze which tool handles customer data\n"
+        "Query: 'show product inventory' → Analyze which tool handles product data\n"
+        "Query: 'display sales report' → Analyze which tool handles sales/transaction data\n"
+        "Query: 'create new order for customer John' → Find sales tool, extract customer info\n"
+        "Query: 'update email for John' → Find customer tool, extract name and action\n"
+        "Query: 'delete product widget' → Find product tool, extract product name\n"
+        "Query: 'show top selling products' → Find sales tool for analytics\n"
+        "Query: 'customer purchase history' → Find sales tool with customer context\n"
     )
 
-    tool_descriptions = generate_tool_descriptions(available_tools)
-    prompt = f"{tool_descriptions}\nUser query: \"{query}\"\nRespond with JSON only."
+    prompt = f"User query: \"{query}\"\n\nAs a sales agent, analyze the query and select the most appropriate tool based on the descriptions above. Consider the business context and data relationships. Respond with JSON only."
 
-    openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-    resp = openai_client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[
-            {"role": "system", "content": system},
-            {"role": "user", "content": prompt},
-        ],
-        temperature=0,
-    )
-
-    raw = _clean_json(resp.choices[0].message.content)
     try:
-        result = json.loads(raw)
-    except json.JSONDecodeError:
-        result = ast.literal_eval(raw)
+        openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        resp = openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0,
+        )
 
-    if "action" in result and result["action"] in ["list", "show", "display", "view", "get"]:
-        result["action"] = "read"
+        raw = _clean_json(resp.choices[0].message.content)
 
-    return result
+        try:
+            result = json.loads(raw)
+        except json.JSONDecodeError:
+            result = ast.literal_eval(raw)
+
+        # Normalize action names
+        if "action" in result and result["action"] in ["list", "show", "display", "view", "get"]:
+            result["action"] = "read"
+
+        # Validate tool selection
+        if "tool" in result and result["tool"] not in available_tools:
+            # Fallback to first available tool if selection is invalid
+            result["tool"] = list(available_tools.keys())[0]
+
+        return result
+
+    except Exception as e:
+        # Fallback response if LLM call fails
+        return {
+            "tool": list(available_tools.keys())[0] if available_tools else None,
+            "action": "read",
+            "args": {},
+            "error": f"Failed to parse query: {str(e)}"
+        }
 
 
 async def _invoke_tool(tool: str, action: str, args: dict) -> any:
