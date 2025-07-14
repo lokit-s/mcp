@@ -545,8 +545,11 @@ async def sales_crud(
 # 10. Main: seed + run server
 # ————————————————
 if __name__ == "__main__":
-    # 1) Create + seed all databases
+    # 1) Create + seed all databases (if needed)
     seed_databases()
+    
+    # 2) Launch the MCP server for cloud deployment
+    import os
+    port = int(os.environ.get("PORT", 8000))
+    mcp.run(transport="streamable-http", host="0.0.0.0", port=port)
 
-    # 2) Launch the MCP server with Streamable HTTP
-    mcp.run(transport="streamable-http")
