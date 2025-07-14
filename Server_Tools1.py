@@ -287,23 +287,7 @@ async def sqlserver_crud(
         cnxn.commit()
         return {"sql": sql_query, "result": f"✅ Customer id={customer_id} deleted."}
 
-    elif operation == "describe":
-        if not table_name:
-            return {"sql": None, "result": "❌ 'table_name' required for describe."}
 
-        sql_query = """
-                    SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE, CHARACTER_MAXIMUM_LENGTH
-                    FROM INFORMATION_SCHEMA.COLUMNS
-                    WHERE TABLE_SCHEMA = %s \
-                      AND TABLE_NAME = %s \
-                    """
-        cur.execute(sql_query, (MYSQL_DB, table_name))
-        rows = cur.fetchall()
-        result = [
-            {"column": r[0], "type": r[1], "nullable": r[2], "max_length": r[3]}
-            for r in rows
-        ]
-        return {"sql": sql_query, "result": result}
 
     else:
         return {"sql": None, "result": f"❌ Unknown operation '{operation}'."}
@@ -378,23 +362,7 @@ async def postgresql_crud(
         cnxn.commit()
         return {"sql": sql_query, "result": f"✅ Deleted product."}
 
-    elif operation == "describe":
-        if not table_name:
-            cnxn.close()
-            return {"sql": None, "result": "❌ 'table_name' required for describe."}
-        sql_query = """
-                    SELECT column_name, data_type, is_nullable, character_maximum_length
-                    FROM information_schema.columns
-                    WHERE table_name = %s \
-                    """
-        cur.execute(sql_query, (table_name,))
-        rows = cur.fetchall()
-        result = [
-            {"column": r[0], "type": r[1], "nullable": r[2], "max_length": r[3]}
-            for r in rows
-        ]
-        cnxn.close()
-        return {"sql": sql_query, "result": result}
+
 
     else:
         cnxn.close()
@@ -517,24 +485,7 @@ async def sales_crud(
         sales_cnxn.close()
         return {"sql": sql_query, "result": result}
 
-    elif operation == "describe":
-        if not table_name:
-            sales_cnxn.close()
-            return {"sql": None, "result": "❌ 'table_name' required for describe."}
 
-        sql_query = """
-                    SELECT column_name, data_type, is_nullable, character_maximum_length
-                    FROM information_schema.columns
-                    WHERE table_name = %s \
-                    """
-        sales_cur.execute(sql_query, (table_name,))
-        rows = sales_cur.fetchall()
-        result = [
-            {"column": r[0], "type": r[1], "nullable": r[2], "max_length": r[3]}
-            for r in rows
-        ]
-        sales_cnxn.close()
-        return {"sql": sql_query, "result": result}
 
     else:
         sales_cnxn.close()
