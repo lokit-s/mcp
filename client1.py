@@ -249,7 +249,6 @@ st.markdown("""
         font-weight: 500;
         font-size: 1.07rem;
     }
-
     </style>
 """, unsafe_allow_html=True)
 
@@ -408,11 +407,10 @@ st.markdown(
         margin: 20px auto;
         ">
     </div>
-    
+
     """,
     unsafe_allow_html=True
 )
-
 
 # ========== SESSION STATE INIT ==========
 if "messages" not in st.session_state:
@@ -440,8 +438,65 @@ if "chat_input_box" not in st.session_state:
 
 # ========== HELPER FUNCTIONS ==========
 def _clean_json(raw: str) -> str:
-    fences = re.findall(r"``````", raw)
+    fences = re.findall(r"``````", raw, re.DOTALL)
     return fences[0].strip() if fences else raw.strip()
+
+
+# ========== NEW LLM RESPONSE GENERATOR ==========
+def generate_llm_response(operation_result: dict, action: str, tool: str, user_query: str) -> str:
+    """Generate LLM response based on operation result with context"""
+
+    # Prepare context for LLM
+    context = {
+        "action": action,
+        "tool": tool,
+        "user_query": user_query,
+        "operation_result": operation_result
+    }
+
+    system_prompt = (
+        "You are a helpful database assistant. Generate a brief, natural response "
+        "explaining what operation was performed and its result. Be conversational "
+        "and informative. Focus on the business context and user-friendly explanation."
+    )
+
+    user_prompt = f"""
+    Based on this database operation context, generate a brief natural response:
+
+    User asked: "{user_query}"
+    Operation: {action}
+    Tool used: {tool}
+    Result: {json.dumps(operation_result, indent=2)}
+
+    Generate a single line response explaining what was done and the outcome.
+    """
+
+    try:
+        openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        response = openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            temperature=0.7,
+            max_tokens=100
+        )
+        return response.choices[0].message.content.strip()
+    except Exception as e:
+        # Fallback response if LLM call fails
+        if action == "read":
+            return f"Successfully retrieved data from {tool}."
+        elif action == "create":
+            return f"Successfully created new record in {tool}."
+        elif action == "update":
+            return f"Successfully updated record in {tool}."
+        elif action == "delete":
+            return f"Successfully deleted record from {tool}."
+        elif action == "describe":
+            return f"Successfully retrieved table schema from {tool}."
+        else:
+            return f"Operation completed successfully using {tool}."
 
 
 def parse_user_query(query: str, available_tools: dict) -> dict:
@@ -621,6 +676,53 @@ def extract_price(text):
     return float(match.group(0)) if match else None
 
 
+def generate_table_description(df: pd.DataFrame, content: dict, action: str, tool: str) -> str:
+    """Generate LLM-based table description from JSON response data"""
+
+    # Sample first few rows for context (don't send all data to LLM)
+    sample_data = df.head(3).to_dict('records') if len(df) > 0 else []
+
+    # Create context for LLM
+    context = {
+        "action": action,
+        "tool": tool,
+        "record_count": len(df),
+        "columns": list(df.columns) if len(df) > 0 else [],
+        "sample_data": sample_data,
+        "full_response": content.get("result", [])[:3] if isinstance(content.get("result"), list) else content.get(
+            "result", "")
+    }
+
+    system_prompt = (
+        "You are a data analyst. Generate a brief, insightful 1-line description "
+        "of the table data based on the JSON response. Focus on what the data represents "
+        "and any interesting patterns you notice. Be concise and business-focused."
+    )
+
+    prompt = f"""
+    Analyze this table data and generate a single insightful line about it:
+
+    Context: {json.dumps(context, indent=2)}
+
+    Generate one line describing what this data represents and any key insights.
+    """
+
+    try:
+        openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        response = openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.7,
+            max_tokens=80
+        )
+        return response.choices[0].message.content.strip()
+    except Exception as e:
+        return f"Retrieved {len(df)} records from the database."
+
+
 # ========== MAIN ==========
 if application == "MCP Application":
     user_avatar_url = "https://cdn-icons-png.flaticon.com/512/1946/1946429.png"
@@ -720,6 +822,7 @@ if application == "MCP Application":
             content = msg["content"]
             action = msg.get("action", "")
             tool = msg.get("tool", "")
+            user_query = msg.get("user_query", "")
 
             with st.expander("Details"):
                 if "request" in msg:
@@ -735,29 +838,18 @@ if application == "MCP Application":
                 else:
                     st.code(content["result"])
 
-            if action == "read":
-                summary = "I'll help you view the customer table. Let me retrieve the data from the SQL Server database." if tool == "sqlserver_crud" \
-                    else "I'll help you view the product table. Let me retrieve the data from the PostgreSQL database." if tool == "postgresql_crud" \
-                    else "I'll help you retrieve the table data. Let me fetch it from the database."
-            elif action == "create":
-                summary = "Creating a new record as requested."
-            elif action == "update":
-                summary = "Updating the requested record."
-            elif action == "delete":
-                summary = "Deleting the requested record."
-            elif action == "describe":
-                summary = "Fetching the schema for the selected table"
-            else:
-                summary = "Performing the requested operation."
+            # Generate LLM response for the operation
+            llm_response = generate_llm_response(content, action, tool, user_query)
 
             st.markdown(
                 f"""
                 <div class="chat-row left">
                     <img src="{agent_avatar_url}" class="avatar agent-avatar" alt="Agent">
-                    <div class="chat-bubble agent-msg agent-bubble">{summary}</div>
+                    <div class="chat-bubble agent-msg agent-bubble">{llm_response}</div>
                 </div>
                 """, unsafe_allow_html=True
             )
+
             if action in {"create", "update", "delete"}:
                 result_msg = content.get("result", "")
                 if "✅" in result_msg or "success" in result_msg.lower():
@@ -1004,6 +1096,7 @@ if application == "MCP Application":
                 "tool": p.get("tool"),
                 "action": p.get("action"),
                 "args": p.get("args"),
+                "user_query": user_query,  # Added user_query to the message
             }
             st.session_state.messages.append(assistant_message)
         st.rerun()  # Rerun so chat output appears
