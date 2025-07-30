@@ -4,7 +4,7 @@ import streamlit as st
 import base64
 from io import BytesIO
 from PIL import Image
-from openai import OpenAI
+from groq import Groq
 from fastmcp import Client
 from fastmcp.client.transports import StreamableHttpTransport
 import streamlit.components.v1 as components
@@ -12,6 +12,7 @@ import re
 from dotenv import load_dotenv
 
 load_dotenv()
+
 # ========== PAGE CONFIG ==========
 st.set_page_config(page_title="MCP CRUD Chat", layout="wide")
 
@@ -243,7 +244,16 @@ st.markdown("""
     .expandable {
         margin-top: 8px;
     }
-
+    .groq-badge {
+        display: inline-block;
+        background: linear-gradient(135deg, #FF6B6B, #4ECDC4);
+        color: white;
+        padding: 2px 8px;
+        border-radius: 12px;
+        font-size: 0.75rem;
+        font-weight: bold;
+        margin-left: 8px;
+    }
     [data-testid="stSidebar"] .stSelectbox label {
         color: #fff !important;
         font-weight: 500;
@@ -252,6 +262,17 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
+# ========== GROQ CLIENT INITIALIZATION ==========
+def get_groq_client():
+    """Initialize and return Groq client"""
+    groq_api_key = os.getenv("GROQ_API_KEY")
+    if not groq_api_key:
+        st.error("GROQ_API_KEY not found in environment variables!")
+        st.stop()
+    return Groq(api_key=groq_api_key)
+
+# Initialize Groq client
+groq_client = get_groq_client()
 
 # ========== DYNAMIC TOOL DISCOVERY FUNCTIONS ==========
 async def _discover_tools() -> dict:
@@ -265,11 +286,9 @@ async def _discover_tools() -> dict:
         st.error(f"Failed to discover tools: {e}")
         return {}
 
-
 def discover_tools() -> dict:
     """Synchronous wrapper for tool discovery"""
     return asyncio.run(_discover_tools())
-
 
 def generate_tool_descriptions(tools_dict: dict) -> str:
     """Generate tool descriptions string from discovered tools"""
@@ -281,7 +300,6 @@ def generate_tool_descriptions(tools_dict: dict) -> str:
         descriptions.append(f"{i}. {tool_name}: {tool_desc}")
 
     return "\n".join(descriptions)
-
 
 # ========== SIDEBAR NAVIGATION ==========
 with st.sidebar:
@@ -295,15 +313,15 @@ with st.sidebar:
         )
 
         # Dynamically choose default options for other selects
-        # Option lists
+        # Option lists - Updated with Groq
         protocol_options = ["", "MCP Protocol", "A2A Protocol"]
-        llm_options = ["", "GPT-4o", "GPT-4", "Claude 3 Sonnet", "Claude 3 Opus"]
+        llm_options = ["", "Groq Llama 3.1 70B", "Groq Llama 3.1 8B", "Groq Mixtral 8x7B", "Groq Gemma 7B"]
 
         # Logic to auto-select defaults if MCP Application is chosen
         protocol_index = protocol_options.index(
             "MCP Protocol") if application == "MCP Application" else protocol_options.index(
             st.session_state.get("protocol_select", ""))
-        llm_index = llm_options.index("GPT-4o") if application == "MCP Application" else llm_options.index(
+        llm_index = llm_options.index("Groq Llama 3.1 70B") if application == "MCP Application" else llm_options.index(
             st.session_state.get("llm_select", ""))
 
         protocol = st.selectbox(
@@ -336,8 +354,6 @@ with st.sidebar:
             index=server_tools_index
         )
 
-        # REMOVED: Refresh Tools button from sidebar
-
         st.button("Clear/Reset", key="clear_button")
 
     st.markdown('<div class="sidebar-logo-label">Build & Deployed on</div>', unsafe_allow_html=True)
@@ -352,7 +368,6 @@ with st.sidebar:
         unsafe_allow_html=True
     )
 
-
 # ========== LOGO/HEADER FOR MAIN AREA ==========
 def get_image_base64(img_path):
     img = Image.open(img_path)
@@ -361,7 +376,6 @@ def get_image_base64(img_path):
     img_bytes = buffered.getvalue()
     img_base64 = base64.b64encode(img_bytes).decode()
     return img_base64
-
 
 logo_path = "Logo.png"
 logo_base64 = get_image_base64(logo_path) if os.path.exists(logo_path) else ""
@@ -390,14 +404,14 @@ st.markdown(
             letter-spacing: -2px;
             color: #222;
         ">
-            MCP-Driven Data Management Implementation
+            MCP-Driven Data Management Implementation<span class="groq-badge">Powered by Groq</span>
         </span>
         <span style="
             font-size: 1.15rem;
             color: #555;
             margin-top: 0.35rem;
         ">
-            Agentic Platform: Leveraging MCP and LLMs for Secure CRUD Operations and Instant Analytics on SQL Server and PostgreSQL.
+            Agentic Platform: Leveraging MCP and Groq LLMs for Secure CRUD Operations and Instant Analytics on SQL Server and PostgreSQL.
         </span>
         <hr style="
         width: 80%;
@@ -407,7 +421,6 @@ st.markdown(
         margin: 20px auto;
         ">
     </div>
-
     """,
     unsafe_allow_html=True
 )
@@ -435,16 +448,47 @@ if "menu_expanded" not in st.session_state:
 if "chat_input_box" not in st.session_state:
     st.session_state["chat_input_box"] = ""
 
+# ========== GROQ HELPER FUNCTIONS ==========
+def get_groq_model_name(selected_model: str) -> str:
+    """Map UI model selection to Groq model names"""
+    model_mapping = {
+        "Groq Llama 3.1 70B": "llama-3.1-70b-versatile",
+        "Groq Llama 3.1 8B": "llama-3.1-8b-instant", 
+        "Groq Mixtral 8x7B": "mixtral-8x7b-32768",
+        "Groq Gemma 7B": "gemma-7b-it"
+    }
+    return model_mapping.get(selected_model, "llama-3.1-70b-versatile")
+
+def call_groq_llm(prompt: str, system_prompt: str = "", temperature: float = 0.7, max_tokens: int = 1024) -> str:
+    """Call Groq LLM with error handling"""
+    try:
+        model_name = get_groq_model_name(st.session_state.get("llm_select", "Groq Llama 3.1 70B"))
+        
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
+
+        completion = groq_client.chat.completions.create(
+            model=model_name,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens
+        )
+        
+        return completion.choices[0].message.content.strip()
+    except Exception as e:
+        st.error(f"Groq API Error: {str(e)}")
+        return f"Error generating response: {str(e)}"
 
 # ========== HELPER FUNCTIONS ==========
 def _clean_json(raw: str) -> str:
     fences = re.findall(r"``````", raw, re.DOTALL)
     return fences[0].strip() if fences else raw.strip()
 
-
-# ========== NEW LLM RESPONSE GENERATOR ==========
+# ========== NEW GROQ-POWERED LLM RESPONSE GENERATOR ==========
 def generate_llm_response(operation_result: dict, action: str, tool: str, user_query: str) -> str:
-    """Generate LLM response based on operation result with context"""
+    """Generate Groq LLM response based on operation result with context"""
 
     # Prepare context for LLM
     context = {
@@ -455,7 +499,7 @@ def generate_llm_response(operation_result: dict, action: str, tool: str, user_q
     }
 
     system_prompt = (
-        "You are a helpful database assistant. Generate a brief, natural response "
+        "You are a helpful database assistant powered by Groq. Generate a brief, natural response "
         "explaining what operation was performed and its result. Be conversational "
         "and informative. Focus on the business context and user-friendly explanation."
     )
@@ -466,23 +510,13 @@ def generate_llm_response(operation_result: dict, action: str, tool: str, user_q
     User asked: "{user_query}"
     Operation: {action}
     Tool used: {tool}
-    Result: {json.dumps(operation_result, indent=2)}
+    Result: {json.dumps(operation_result, indent=2, default=str)}
 
     Generate a single line response explaining what was done and the outcome.
     """
 
     try:
-        openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-        response = openai_client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ],
-            temperature=0.7,
-            max_tokens=100
-        )
-        return response.choices[0].message.content.strip()
+        return call_groq_llm(user_prompt, system_prompt, temperature=0.7, max_tokens=100)
     except Exception as e:
         # Fallback response if LLM call fails
         if action == "read":
@@ -498,9 +532,8 @@ def generate_llm_response(operation_result: dict, action: str, tool: str, user_q
         else:
             return f"Operation completed successfully using {tool}."
 
-
 def parse_user_query(query: str, available_tools: dict) -> dict:
-    """Parse user query with fully dynamic tool selection based on tool descriptions"""
+    """Parse user query with fully dynamic tool selection based on tool descriptions using Groq"""
 
     if not available_tools:
         return {"error": "No tools available"}
@@ -512,15 +545,15 @@ def parse_user_query(query: str, available_tools: dict) -> dict:
 
     tools_description = "\n".join(tool_info)
 
-    system = (
-        "You are an intelligent sales agent and database router for CRUD operations. "
+    system_prompt = (
+        "You are an intelligent sales agent and database router for CRUD operations powered by Groq. "
         "Your job is to analyze the user's query and select the most appropriate tool based on the tool descriptions provided.\n\n"
 
         "AS A SALES AGENT, YOU SHOULD:\n"
         "- Understand business context and customer needs\n"
         "- Recognize sales-related queries (orders, transactions, revenue, customer purchases)\n"
         "- Identify cross-database relationships (customer orders, product sales, inventory)\n"
-        "- Provide intelligent routing for business analytics and reporting needs\n"
+        "- Provide intelligent routing for business analytics and reporting needs\n"    
         "- Handle complex queries that may involve multiple data sources\n\n"
 
         "RESPONSE FORMAT:\n"
@@ -575,17 +608,8 @@ def parse_user_query(query: str, available_tools: dict) -> dict:
     prompt = f"User query: \"{query}\"\n\nAs a sales agent, analyze the query and select the most appropriate tool based on the descriptions above. Consider the business context and data relationships. Respond with JSON only."
 
     try:
-        openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-        resp = openai_client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0,
-        )
-
-        raw = _clean_json(resp.choices[0].message.content)
+        raw = call_groq_llm(prompt, system_prompt, temperature=0, max_tokens=500)
+        raw = _clean_json(raw)
 
         try:
             result = json.loads(raw)
@@ -612,7 +636,6 @@ def parse_user_query(query: str, available_tools: dict) -> dict:
             "error": f"Failed to parse query: {str(e)}"
         }
 
-
 async def _invoke_tool(tool: str, action: str, args: dict) -> any:
     transport = StreamableHttpTransport(f"{st.session_state['MCP_SERVER_URL']}/mcp")
     async with Client(transport) as client:
@@ -628,10 +651,8 @@ async def _invoke_tool(tool: str, action: str, args: dict) -> any:
     except:
         return text
 
-
 def call_mcp_tool(tool: str, action: str, args: dict) -> any:
     return asyncio.run(_invoke_tool(tool, action, args))
-
 
 def format_natural(data) -> str:
     if isinstance(data, list):
@@ -648,7 +669,6 @@ def format_natural(data) -> str:
         return ", ".join(parts) + "."
     return str(data)
 
-
 def normalize_args(args):
     mapping = {
         "product_name": "name",
@@ -660,24 +680,20 @@ def normalize_args(args):
             args[new_key] = args.pop(old_key)
     return args
 
-
 def extract_name(text):
     match = re.search(r'customer\s+(\w+)', text, re.IGNORECASE)
     return match.group(1) if match else None
-
 
 def extract_email(text):
     match = re.search(r'[\w\.-]+@[\w\.-]+', text)
     return match.group(0) if match else None
 
-
 def extract_price(text):
     match = re.search(r'(\d+(?:\.\d+)?)', text)
     return float(match.group(0)) if match else None
 
-
 def generate_table_description(df: pd.DataFrame, content: dict, action: str, tool: str) -> str:
-    """Generate LLM-based table description from JSON response data"""
+    """Generate Groq LLM-based table description from JSON response data"""
 
     # Sample first few rows for context (don't send all data to LLM)
     sample_data = df.head(3).to_dict('records') if len(df) > 0 else []
@@ -694,7 +710,7 @@ def generate_table_description(df: pd.DataFrame, content: dict, action: str, too
     }
 
     system_prompt = (
-        "You are a data analyst. Generate a brief, insightful 1-line description "
+        "You are a data analyst powered by Groq. Generate a brief, insightful 1-line description "
         "of the table data based on the JSON response. Focus on what the data represents "
         "and any interesting patterns you notice. Be concise and business-focused."
     )
@@ -708,27 +724,15 @@ def generate_table_description(df: pd.DataFrame, content: dict, action: str, too
     """
 
     try:
-        openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-        response = openai_client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0.7,
-            max_tokens=80
-        )
-        return response.choices[0].message.content.strip()
+        return call_groq_llm(prompt, system_prompt, temperature=0.7, max_tokens=80)
     except Exception as e:
         return f"Retrieved {len(df)} records from the database."
-
 
 # ========== MAIN ==========
 if application == "MCP Application":
     user_avatar_url = "https://cdn-icons-png.flaticon.com/512/1946/1946429.png"
     agent_avatar_url = "https://cdn-icons-png.flaticon.com/512/4712/4712039.png"
 
-    openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
     MCP_SERVER_URL = os.getenv("MCP_SERVER_URL", "http://localhost:8000")
     st.session_state["MCP_SERVER_URL"] = MCP_SERVER_URL
 
@@ -747,10 +751,10 @@ if application == "MCP Application":
     col1, col2 = st.columns([4, 1])
 
     with col1:
-        # Display discovered tools info
+        # Display discovered tools info with Groq badge
         if st.session_state.available_tools:
             st.info(
-                f"🔧 Discovered {len(st.session_state.available_tools)} tools: {', '.join(st.session_state.available_tools.keys())}")
+                f"🔧 Discovered {len(st.session_state.available_tools)} tools: {', '.join(st.session_state.available_tools.keys())} | Powered by Groq 🚀")
         else:
             st.warning("⚠️ No tools discovered. Please check your MCP server connection.")
 
@@ -838,14 +842,14 @@ if application == "MCP Application":
                 else:
                     st.code(content["result"])
 
-            # Generate LLM response for the operation
+            # Generate Groq LLM response for the operation
             llm_response = generate_llm_response(content, action, tool, user_query)
 
             st.markdown(
                 f"""
                 <div class="chat-row left">
                     <img src="{agent_avatar_url}" class="avatar agent-avatar" alt="Agent">
-                    <div class="chat-bubble agent-msg agent-bubble">{llm_response}</div>
+                    <div class="chat-bubble agent-msg agent-bubble">{llm_response}<span class="groq-badge">Groq</span></div>
                 </div>
                 """, unsafe_allow_html=True
             )
@@ -873,16 +877,11 @@ if application == "MCP Application":
                 st.markdown("#### Here's the current table:")
                 df = pd.DataFrame(content["result"])
                 st.table(df)
-                if tool == "sqlserver_crud":
-                    st.markdown(
-                        f"The table contains {len(df)} customers with their respective IDs, names, emails, and creation timestamps."
-                    )
-                elif tool == "postgresql_crud":
-                    st.markdown(
-                        f"The table contains {len(df)} products with their respective IDs, names, prices, and descriptions."
-                    )
-                else:
-                    st.markdown(f"The table contains {len(df)} records.")
+                
+                # Generate Groq-powered table description
+                table_description = generate_table_description(df, content, action, tool)
+                st.markdown(f"**Groq Analysis:** {table_description}")
+                
             elif action == "describe" and isinstance(content['result'], list):
                 st.markdown("#### Table Schema: ")
                 df = pd.DataFrame(content['result'])
@@ -914,7 +913,7 @@ if application == "MCP Application":
         with chatbar_cols[1]:
             user_query_input = st.text_input(
                 "",
-                placeholder="How can I help you today?",
+                placeholder="Ask me anything about your data... (Powered by Groq)",
                 label_visibility="collapsed",
                 key="chat_input_box"
             )
@@ -927,7 +926,7 @@ if application == "MCP Application":
     # ========== FLOATING TOOL MENU ==========
     if st.session_state.get("show_menu", False):
         st.markdown('<div class="tool-menu">', unsafe_allow_html=True)
-        st.markdown('<div class="server-title">MultiDBCRUD</div>', unsafe_allow_html=True)
+        st.markdown('<div class="server-title">MultiDBCRUD <span class="groq-badge">Groq</span></div>', unsafe_allow_html=True)
         tool_label = "Tools" + (" ▼" if st.session_state["menu_expanded"] else " ▶")
         if st.button(tool_label, key="expand_tools", help="Show tools", use_container_width=True):
             st.session_state["menu_expanded"] = not st.session_state["menu_expanded"]
@@ -1096,7 +1095,7 @@ if application == "MCP Application":
                 "tool": p.get("tool"),
                 "action": p.get("action"),
                 "args": p.get("args"),
-                "user_query": user_query,  # Added user_query to the message
+                "user_query": user_query,
             }
             st.session_state.messages.append(assistant_message)
         st.rerun()  # Rerun so chat output appears
