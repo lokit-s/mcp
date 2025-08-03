@@ -9,3 +9,4 @@ pillow>=10.0.0
 groq>=0.4.1
 python-dotenv>=1.0.0
 openai
+langchain_groq
